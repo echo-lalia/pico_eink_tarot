@@ -1,4 +1,4 @@
-from Alt_ePaper import EinkPIO
+from Pico_ePaper import EinkPIO
 #from ePaperOfficial import EPD_3in7
 import framebuf
 import chaos
@@ -24,6 +24,7 @@ def draw():
     pwm.duty_u16(2000)
     epd = EinkPIO(rotation=0)
 
+    sounds.play(sounds.thump,4)
     #generate random info from adc
     reading = chaos.get(50)
     reading2 = chaos.get(5)
@@ -32,7 +33,7 @@ def draw():
 
     del reading2
     del str_reading
-
+    
     #also add the current ticks time because it non-scientifically feels better to me to add random from multiple sources
     reading += time.ticks_cpu()
     pwm.duty_u16(0)
@@ -40,7 +41,7 @@ def draw():
     #init random with our chaos we collected
     print("Seed: " + str(reading))
     random.seed(reading)
-
+    
     #get our image
     imageNum = random.randint(1,78)
     #decide if were reversed
@@ -61,7 +62,7 @@ def draw():
         print("REVERSED")
         
     #use random to import specific image
-    filename = "i" + str(imageNum) + ".py"
+    filename = "images/i" + str(imageNum) + ".py"
 
     #the 'partial' version of the image driver does not always set the color channels correctly for some reason
     colorchannel1 = epd.RAM_BW
@@ -71,6 +72,7 @@ def draw():
     #import i + whichimage as img
     img = __import__(filename[:-3])
 
+    
     #randomly decide if we will add glitch
     if glitchrand == 1 or glitchrand == 2:
         #image split down the middle
@@ -95,25 +97,18 @@ def draw():
         img_tmp = framebuf.FrameBuffer(img.img_red, 280, 480, framebuf.MONO_HLSB)
         epd.blit(img_tmp, 0, -240, ram=colorchannel2)
     elif glitchrand == 4:
-        print("Glitch: ChannelSwap")
-        #reversed channels
-        img_tmp = framebuf.FrameBuffer(img.img_bw, 280, 480, framebuf.MONO_HLSB)
-        epd.blit(img_tmp, 0, 0, ram=colorchannel2)
-        img_tmp = framebuf.FrameBuffer(img.img_red, 280, 480, framebuf.MONO_HLSB)
-        epd.blit(img_tmp, 0, 0, ram=colorchannel1)
-    elif glitchrand == 5:
         print("Glitch: HMSB")
         #HMSB color error
         img_tmp = framebuf.FrameBuffer(img.img_bw, 280, 480, framebuf.MONO_HMSB)
         epd.blit(img_tmp, 0, 0, ram=colorchannel1)
         img_tmp = framebuf.FrameBuffer(img.img_red, 280, 480, framebuf.MONO_HMSB)
         epd.blit(img_tmp, 0, 0, ram=colorchannel2)
-    elif glitchrand == 6 or glitchrand == 7 or glitchrand == 8:
+    elif 5 <= glitchrand <= 8:
         print("Glitch: Shift")
         #select part of image and copy it to a random location
         randXplacement = random.randint(-270, 270)
         randYplacement = random.randint(-10,450)
-        rand_numrows = random.randint(10,200)
+        rand_numrows = random.randint(10,400)
         rand_rowaddress = random.randint(0, 480 - rand_numrows)
         rowlength = 35
         selectlength = rowlength * rand_numrows

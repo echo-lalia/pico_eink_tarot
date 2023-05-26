@@ -34,24 +34,26 @@ def wrap_string(string, max_width):
 
 def draw():
     import sounds
-    from Pico_ePaper import Eink
+    from Pico_ePaper import EinkPIO
     import framebuf
     import chaos
-    import machine
     from machine import Pin, PWM
     import random
     import gc
     import time
-    import card_dict as cards
+    from images import card_dict as cards
+
+    gc.collect()
 
     #turn on led to low to show that the device is working
     pwm = PWM(Pin(21))
     pwm.freq(1000)
     pwm.duty_u16(2000)
     #init epd for animation
-    epd = Eink(rotation=0)
+    epd = EinkPIO(rotation=0,use_partial_buffer=True)
+    epd.show(lut=1)
     epd.partial_mode_on()
-    epd.fill_rect(0,0,280,480,epd.white)
+    epd.rect(0,0,280,480,epd.white,f=True)
     epd.text("Gathering chaos from", 60, 32, epd.black)
     epd.text("environment...", 84, 42, epd.black)
 
@@ -81,6 +83,7 @@ def draw():
             reading += new_chaos
             
             lineY += 1
+        sounds.play(sounds.thump,10)
         epd.show()
         animY += 1
 
@@ -105,6 +108,7 @@ def draw():
         displayrotation = 180
     #get name and keywords from dictionary, store what we need and delete dictionary
     #card_name = cards.dict[imageNum]["name"]
+    
     card_keywords = cards.dict[imageNum]["key"]
     if displayrotation == 180:
         card_keywords = cards.dict[imageNum]["reversed"]
@@ -113,6 +117,8 @@ def draw():
     print("Keywords: " + card_keywords)
     #decide now if we will glitch
     glitchrand = random.randint(1,100)
+
+    gc.collect()
 
     #display keywords as animation before loading final tarot card image
     lines = wrap_string(card_keywords, 30)
@@ -124,11 +130,11 @@ def draw():
         line_width =  len(oneline) * 8
         line_pos = int(140 - (line_width / 2))
         line_Y = 250 + (40 * currentline)
-        epd.fill_rect(line_pos - 18, line_Y - 18, line_width + 44, 42, epd.black)
-        epd.fill_rect(line_pos - 14, line_Y - 14, line_width + 36, 34, epd.white)
+        epd.rect(line_pos - 18, line_Y - 18, line_width + 44, 42, epd.black,f=True)
+        epd.rect(line_pos - 14, line_Y - 14, line_width + 36, 34, epd.white,f=True)
         epd.text(oneline, line_pos, line_Y)
         currentline += 1
-    sounds.play(sounds.keywords,2)
+    sounds.play(sounds.thump,4)
     epd.show()
     time.sleep_ms(1300)
 
@@ -137,8 +143,8 @@ def draw():
     cardname_pos = int(140 - (cardname_width / 2))
     cardname_box = (cardname_pos - 18)
     cardname_box_width = cardname_width + 32
-    epd.fill_rect(cardname_box - 4,106,cardname_box_width + 8,48, epd.black)
-    epd.fill_rect(cardname_box, 110, cardname_box_width, 40, epd.white)
+    epd.rect(cardname_box - 4,106,cardname_box_width + 8,48, epd.black,f=True)
+    epd.rect(cardname_box, 110, cardname_box_width, 40, epd.white,f=True)
     epd.text(cards.dict[imageNum]["name"], cardname_pos, 126)
     epd.text(cards.dict[imageNum]["name"], cardname_pos, 125)
 
@@ -147,8 +153,8 @@ def draw():
         cardname_pos = int(140 - (cardname_width / 2))
         cardname_box = (cardname_pos - 12)
         cardname_box_width = cardname_width + 24
-        epd.fill_rect(cardname_box - 4,154,cardname_box_width + 8,43, epd.black)
-        epd.fill_rect(cardname_box, 158, cardname_box_width, 35, epd.white)
+        epd.rect(cardname_box - 4,154,cardname_box_width + 8,43, epd.black,f=True)
+        epd.rect(cardname_box, 158, cardname_box_width, 35, epd.white,f=True)
         epd.text("in REVERSE", cardname_pos, 172)
     sounds.play(sounds.keywords,2)
     epd.show()
@@ -163,7 +169,7 @@ def draw():
         print("REVERSED")
         
     #use random to import specific image
-    filename = "i" + str(imageNum) + ".py"
+    filename = "images/i" + str(imageNum) + ".py"
 
     #the 'partial' version of the image driver does not always set the color channels correctly for some reason
     colorchannel1 = epd.RAM_RED
@@ -178,6 +184,7 @@ def draw():
     #unloadModule(Pin)
     del time
     #del sounds
+    del cards.dict
     del cards
     del chaos
     del cardname_width
@@ -198,10 +205,11 @@ def draw():
     
     # Import image files
     #import i + whichimage as img
+    #img = __import__(filename[:-3])
     img = __import__(filename[:-3])
 
     epd.partial_mode_off()
-
+    
     #randomly decide if we will add glitch
     if glitchrand == 1 or glitchrand == 2:
         #image split down the middle
@@ -226,25 +234,18 @@ def draw():
         img_tmp = framebuf.FrameBuffer(img.img_red, 280, 480, framebuf.MONO_HLSB)
         epd.blit(img_tmp, 0, -240, ram=colorchannel2)
     elif glitchrand == 4:
-        print("Glitch: ChannelSwap")
-        #reversed channels
-        img_tmp = framebuf.FrameBuffer(img.img_bw, 280, 480, framebuf.MONO_HLSB)
-        epd.blit(img_tmp, 0, 0, ram=colorchannel2)
-        img_tmp = framebuf.FrameBuffer(img.img_red, 280, 480, framebuf.MONO_HLSB)
-        epd.blit(img_tmp, 0, 0, ram=colorchannel1)
-    elif glitchrand == 5:
         print("Glitch: HMSB")
         #HMSB color error
         img_tmp = framebuf.FrameBuffer(img.img_bw, 280, 480, framebuf.MONO_HMSB)
         epd.blit(img_tmp, 0, 0, ram=colorchannel1)
         img_tmp = framebuf.FrameBuffer(img.img_red, 280, 480, framebuf.MONO_HMSB)
         epd.blit(img_tmp, 0, 0, ram=colorchannel2)
-    elif glitchrand == 6 or glitchrand == 7 or glitchrand == 8:
+    elif 5 <= glitchrand <= 8:
         print("Glitch: Shift")
         #select part of image and copy it to a random location
         randXplacement = random.randint(-270, 270)
         randYplacement = random.randint(-10,400)
-        rand_numrows = random.randint(10,200)
+        rand_numrows = random.randint(10,400)
         rand_rowaddress = random.randint(0, 480 - rand_numrows)
         rowlength = 35
         selectlength = rowlength * rand_numrows
@@ -287,6 +288,7 @@ def draw():
             #show image with 4 level grayscale
             img_tmp = framebuf.FrameBuffer(img.img_bw, 280, 480, framebuf.MONO_HLSB)
             epd.blit(img_tmp, 0, 0, ram=colorchannel1)
+            gc.collect()
             img_tmp = framebuf.FrameBuffer(img.img_red, 280, 480, framebuf.MONO_HLSB)
             epd.blit(img_tmp, 0, 0, ram=colorchannel2)
 
@@ -304,4 +306,5 @@ def draw():
     epd.sleep()
         
     #sys.exit()
+    import machine
     machine.reset()

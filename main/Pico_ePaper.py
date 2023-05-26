@@ -2,6 +2,10 @@
 #
 # source for this code:
 # https://github.com/phoreglad/pico-epaper
+# it has been slightly modified for speed, and I have deleted some components to save on memory.
+# this version will likely not recieve updates. visit the source repo for newer versions.
+#
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 #
 # LUTs have been copied from original example for Waveshare Pico e-Paper 3.7,
 # which can be found here:
@@ -67,13 +71,22 @@ EPD_3IN7_lut_1Gray_A2 = bytes([
 ])
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-from machine import Pin, SPI
+from machine import Pin
 import framebuf
-from utime import ticks_ms, ticks_diff, sleep_ms
+from time import sleep_ms
 from ustruct import pack
+import gc
+import micropython
 
 
-class Eink:
+def profile(func):
+    def wrapper(*args, **kwargs):
+        gc.collect()
+
+    return wrapper
+
+
+class EinkBase:
     black = 0b00
     white = 0b11
     darkgray = 0b01
@@ -83,25 +96,22 @@ class Eink:
     RAM_RED = 0b10
     RAM_RBW = 0b11
 
-    def __init__(self, rotation=0, spi=None, cs_pin=None, dc_pin=None, reset_pin=None, busy_pin=None):
+    def __init__(self, rotation=0, cs_pin=None, dc_pin=None, reset_pin=None, busy_pin=None, use_partial_buffer=False):
         if rotation == 0 or rotation == 180:
             self.width = 280
             self.height = 480
             buf_format = framebuf.MONO_HLSB
+            self._horizontal = False
         elif rotation == 90 or rotation == 270:
             self.width = 480
             self.height = 280
             buf_format = framebuf.MONO_VLSB
+            self._horizontal = True
         else:
-            raise ValueError(f"Incorrect rotation selected ({rotation}). Valid values: 0, 90, 180 and 270.")
+            raise ValueError(
+                f"Incorrect rotation selected ({rotation}). Valid values: 0, 90, 180 and 270.")
 
         self._rotation = rotation
-        self._partial = False
-
-        if spi is None:
-            self._spi = SPI(1, baudrate=20_000_000)
-        else:
-            self._spi = spi
 
         if reset_pin is None:
             self._rst = Pin(12, Pin.OUT, value=0)
@@ -132,49 +142,42 @@ class Eink:
                       2: EPD_3IN7_lut_1Gray_DU,
                       3: EPD_3IN7_lut_1Gray_A2}
 
-        self._buffer_bw = bytearray(self.width * self.height // 8)
+        self._buffer_bw_actual = bytearray(self.width * self.height // 8)
         self._buffer_red = bytearray(self.width * self.height // 8)
-        self._bw = framebuf.FrameBuffer(self._buffer_bw, self.width, self.height, buf_format)
+        self._bw_actual = framebuf.FrameBuffer(self._buffer_bw_actual, self.width, self.height, buf_format)
         self._red = framebuf.FrameBuffer(self._buffer_red, self.width, self.height, buf_format)
-        self._bw.fill(1)
-        self._red.fill(1)
 
-        self._buffer_partial = bytearray(self.width * self.height // 8)
-        self._part = framebuf.FrameBuffer(self._buffer_partial, self.width, self.height, buf_format)
-        self._part.fill(1)
+        # Don't start in partial mode.
+        self._partial = False
+        self._use_partial_buffer = use_partial_buffer
+
+        # Use separate buffer for partial updates only if user wants it, use bw buffer otherwise.
+        if use_partial_buffer:
+            self._buffer_partial = bytearray(self.width * self.height // 8)
+            self._part = framebuf.FrameBuffer(self._buffer_partial, self.width, self.height, buf_format)
+
+        # Alias buffer and FrameBuffer to indicate which buffer should be treated as BW RAM buffer.
+        self._buffer_bw = self._buffer_bw_actual
+        self._bw = self._bw_actual
+
+        self.fill()
 
         self._init_disp()
-        #sleep_ms(500)
+        #sleep_ms(5)
 
     def _reset(self):
         self._rst(1)
-        sleep_ms(30)
+        sleep_ms(1)
         self._rst(0)
-        sleep_ms(3)
+        sleep_ms(1)
         self._rst(1)
-        sleep_ms(30)
+        sleep_ms(1)
 
     def _send_command(self, command):
-        self._dc(0)
-        self._cs(0)
-        if isinstance(command, int):
-            self._spi.write(bytes([command]))
-        elif isinstance(command, (bytes, bytearray)):
-            self._spi.write(command)
-        else:
-            raise ValueError  # For now
-        self._cs(1)
+        raise NotImplementedError
 
     def _send_data(self, data):
-        self._dc(1)
-        self._cs(0)
-        if isinstance(data, int):
-            self._spi.write(bytes([data]))
-        elif isinstance(data, (bytes, bytearray)):
-            self._spi.write(data)
-        else:
-            raise ValueError  # For now
-        self._cs(1)
+        raise NotImplementedError
 
     def _send(self, command, data):
         self._send_command(command)
@@ -183,17 +186,11 @@ class Eink:
     def _read_busy(self):
         while self._busy.value() == 1:
             sleep_ms(1)
-        #sleep_ms(200)
+            pass
+        sleep_ms(1)
 
     def _load_LUT(self, lut=0):
         self._send(0x32, self._luts[lut])
-
-    @micropython.viper
-    def _reverse_bits(self, num: int) -> int:
-        result = 0
-        for i in range(8):
-            result = (result << 1) | ((num >> i) & 1)
-        return result
 
     def _set_cursor(self, x, y):
         self._send(0x4e, pack("h", x))
@@ -217,7 +214,7 @@ class Eink:
 
         # SW reset.
         self._send_command(0x12)
-        sleep_ms(300)
+        sleep_ms(1)
 
         # Clear BW and RED RAMs.
         self._clear_ram()
@@ -257,8 +254,6 @@ class Eink:
         # Set VCOM.
         self._send(0x2c, 0x44)
 
-        self._send(0x37, pack("10B", 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
-
         # Set window.
         if self._rotation == 0:
             self._set_window(0, self.width - 1, 0, self.height - 1)
@@ -274,153 +269,219 @@ class Eink:
         # Set Display Update Control 2
         self._send(0x22, 0xcf)
 
-        # Clear screen.
-        #self.show()
-        self.show_short()
-
     # --------------------------------------------------------
     # Public methods.
-    # --------------------------------------------------------   
-    def show_short(self):
-        self._set_cursor(0, 0)
+    # --------------------------------------------------------
 
-        #self._send(0x24, self._buffer_bw)
-        #self._send(0x26, self._buffer_red)
+    def partial_mode_on(self):
+        self._send(0x37, pack("10B", 0x00, 0xff, 0xff, 0xff, 0xff, 0x4f, 0xff, 0xff, 0xff, 0xff))
+        self._clear_ram()
+        if self._use_partial_buffer:
+            self._buffer_bw = self._buffer_partial
+            self._bw = self._part
+        self._part.fill(1)
+        self._partial = True
 
-        self._load_LUT(1)
-        self._send_command(0x20)
-        self._read_busy()
-        
+    def partial_mode_off(self):
+        self._send(0x37, pack("10B", 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
+        self._clear_ram()
+        if self._use_partial_buffer:
+            self._buffer_bw = self._buffer_bw_actual
+            self._bw = self._bw_actual
+        self._partial = False
+
     def show(self, lut=0):
-        start = ticks_ms()  # Testing only.
         if self._rotation == 0:
             self._set_cursor(0, 0)
         elif self._rotation == 180:
             self._set_cursor(self.width - 1, self.height - 1)
         elif self._rotation == 90:
             self._set_cursor(self.height - 1, 0)
-        elif self._rotation == 270:
+        else:
             self._set_cursor(0, self.width - 1)
-        else:
-            raise ValueError(f"Incorrect rotation selected")
-
-        if self._partial:
-            # Load partial buffer to BW RAM.
-            if self._rotation == 0 or self._rotation == 180:
-                self._send(0x24, self._buffer_partial)
-            else:
-                self._send(0x24, bytes(map(self._reverse_bits, self._buffer_partial)))
-        else:
-            # Load BW buffer to BW RAM and RED buffer to RED RAM.
-            if self._rotation == 0 or self._rotation == 180:
-                self._send(0x24, self._buffer_bw)
-                self._send(0x26, self._buffer_red)
-            else:
-                self._send(0x24, bytes(map(self._reverse_bits, self._buffer_bw)))
-                self._send(0x26, bytes(map(self._reverse_bits, self._buffer_red)))
-
-        print(f"Data loading time: {ticks_diff(ticks_ms(), start)} ms")
-
-        if self._partial:
-            self._load_LUT(2)
-        else:
-            self._load_LUT(lut)
-        self._send_command(0x20)
-        self._read_busy()
-
-    def partial_mode_on(self):
-        self._send(0x37, pack("10B", 0x00, 0xff, 0xff, 0xff, 0xff, 0x4f, 0xff, 0xff, 0xff, 0xff))
-        self._clear_ram()
-        self._partial = True
-
-    def partial_mode_off(self):
-        self._send(0x37, pack("10B", 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
-        self._clear_ram()
-        self._partial = False
 
     def sleep(self):
         self._send(0x10, 0x03)
 
     # --------------------------------------------------------
     # Drawing routines (wrappers for FrameBuffer methods).
-    # -------------------------------------------------------- 
+    # --------------------------------------------------------
 
     def fill(self, c=white):
-        if self._partial:
-            self._part.fill(c)
-        else:
-            self._bw.fill(c & 1)
+        self._bw.fill(c & 1)
+        if not self._partial:
             self._red.fill(c >> 1)
 
     def pixel(self, x, y, c=black):
-        if self._partial:
-            self._part.pixel(x, y, c)
-        else:
-            self._bw.pixel(x, y, c & 1)
+        self._bw.pixel(x, y, c & 1)
+        if not self._partial:
             self._red.pixel(x, y, c >> 1)
 
     def hline(self, x, y, w, c=black):
-        if self._partial:
-            self._part.hline(x, y, w, c)
-        else:
-            self._bw.hline(x, y, w, c & 1)
+        self._bw.hline(x, y, w, c & 1)
+        if not self._partial:
             self._red.hline(x, y, w, c >> 1)
 
     def vline(self, x, y, h, c=black):
-        if self._partial:
-            self._part.vline(x, y, h, c)
-        else:
-            self._bw.vline(x, y, h, c & 1)
+        self._bw.vline(x, y, h, c & 1)
+        if not self._partial:
             self._red.vline(x, y, h, c >> 1)
 
     def line(self, x1, y1, x2, y2, c=black):
-        if self._partial:
-            self._part.line(x1, y1, x2, y2, c)
-        else:
-            self._bw.line(x1, y1, x2, y2, c & 1)
+        self._bw.line(x1, y1, x2, y2, c & 1)
+        if not self._partial:
             self._red.line(x1, y1, x2, y2, c >> 1)
 
-    def rect(self, x, y, w, h, c=black):
-        if self._partial:
-            self._part.rect(x, y, w, h, c)
-        else:
-            self._bw.rect(x, y, w, h, c & 1)
-            self._red.rect(x, y, w, h, c >> 1)
+    def rect(self, x, y, w, h, c=black, f=False):
+        self._bw.rect(x, y, w, h, c & 1, f)
+        if not self._partial:
+            self._red.rect(x, y, w, h, c >> 1, f)
 
-    def fill_rect(self, x, y, w, h, c=black):
-        if self._partial:
-            self._part.fill_rect(x, y, w, h, c)
-        else:
-            self._bw.fill_rect(x, y, w, h, c & 1)
-            self._red.fill_rect(x, y, w, h, c >> 1)
+    def ellipse(self, x, y, xr, yr, c=black, f=False, m=15):
+        self._bw.ellipse(x, y, xr, yr, c & 1, f, m)
+        if not self._partial:
+            self._red.ellipse(x, y, xr, yr, c >> 1, f, m)
+
+    def poly(self, x, y, coords, c=black, f=False):
+        self._bw.poly(x, y, coords, c & 1, f)
+        if not self._partial:
+            self._red.poly(x, y, coords, c >> 1, f)
 
     def text(self, text, x, y, c=black):
-        if self._partial:
-            self._part.text(text, x, y, c)
-        else:
-            self._bw.text(text, x, y, c & 1)
+        self._bw.text(text, x, y, c & 1)
+        if not self._partial:
             self._red.text(text, x, y, c >> 1)
 
     def blit(self, fbuf, x, y, key=-1, palette=None, ram=RAM_RBW):
-        if self._partial:
-            self._part.blit(fbuf, x, y, key, palette)
+        if ram & 1 == 1 or self._partial:
+            self._bw.blit(fbuf, x, y, key, palette)
+        if (ram >> 1) & 1 == 1:
+            self._red.blit(fbuf, x, y, key, palette)
+
+
+class EinkPIO(EinkBase):
+    from machine import mem32
+
+    def __init__(self, sm_num=0, dma=5, *args, **kwargs):
+        self._sm_num = sm_num
+        self._dma = int(dma * 0x40 + 0x50000030)
+        self._sm = None
+        self._sm_shiftctrl = (0x502000d0 + 0x100000 * (self._sm_num // 4)
+                              + 0x18 * (self._sm_num % 4))
+        self._dma_write_addr = (0x50200010 + 0x100000 * (self._sm_num // 4)
+                                + 0x4 * (self._sm_num % 4))
+        dreq = self._sm_num % 4 + 8 * (self._sm_num // 4)
+        self._dma_ctrl = dreq << 15 | 1 << 4 | 1
+        self._pio_setup()
+        super(EinkPIO, self).__init__(*args, **kwargs)
+
+    def _pio_setup(self):
+        from rp2 import asm_pio, PIO, StateMachine
+
+        @asm_pio(out_init=PIO.OUT_LOW,
+                 sideset_init=PIO.OUT_LOW,
+                 autopull=True,
+                 pull_thresh=8,
+                 out_shiftdir=PIO.SHIFT_LEFT)
+        def pio_serial_tx():
+            out(pins, 1).side(0)
+            nop().side(1)
+
+        self._sm = StateMachine(self._sm_num, pio_serial_tx, freq=40_000_000,
+                                sideset_base=Pin(10), out_base=Pin(11))
+        self._sm.active(1)
+
+    def _reversed_output(self):
+        self.mem32[self._sm_shiftctrl + 0x2000] = 1 << 19
+
+    def _normal_output(self):
+        self.mem32[self._sm_shiftctrl + 0x3000] = 1 << 19
+
+    def _send_command(self, command):
+        self._dc(0)
+        self._cs(0)
+        if isinstance(command, int):
+            self._sm.put(command, 24)
+        elif isinstance(command, (bytes, bytearray)):
+            for cmd in command:
+                self._sm.put(cmd, 24)
         else:
-            if ram & 1 == 1:
-                self._bw.blit(fbuf, x, y, key, palette)
-            if (ram >> 1) & 1 == 1:
-                self._red.blit(fbuf, x, y, key, palette)
+            raise ValueError
+        self._cs(1)
+
+    def _send_data(self, data):
+        self._dc(1)
+        self._cs(0)
+        if isinstance(data, int):
+            self._sm.put(data, 24)
+        elif isinstance(data, (bytes, bytearray)):
+            for cmd in data:
+                self._sm.put(cmd, 24)
+        else:
+            raise ValueError
+        self._cs(1)
+
+    @micropython.viper
+    def _dma_start(self, buffer):
+        dma_ptr = ptr32(self._dma)
+        dma_ptr[0] = int(self._dma_ctrl)
+        dma_ptr[1] = int(self._dma_write_addr)
+        dma_ptr[2] = int(len(buffer))
+        dma_ptr[3] = int(ptr32(buffer))
+
+    @micropython.viper
+    def _check_dma_busy(self, a: ptr32) -> int:
+        return (a[0] >> 24) & 1
+
+    def _send_buffer(self, buffer):
+        if self._horizontal:
+            self._reversed_output()
+
+        self._dc(1)
+        self._cs(0)
+
+        self._dma_start(buffer)
+        dma_ctrl = self._dma
+
+        while self._check_dma_busy(dma_ctrl):
+            pass
+        self._cs(1)
+
+        if self._horizontal:
+            self._normal_output()
+
+    # --------------------------------------------------------
+    # Public methods.
+    # --------------------------------------------------------
+
+    # @profile
+    def show(self, lut=0):
+        super().show()
+        self._send_command(0x24)
+        self._send_buffer(self._buffer_bw)
+        if self._partial:
+            self._load_LUT(2)
+        else:
+            self._send_command(0x26)
+            self._send_buffer(self._buffer_red)
+            self._load_LUT(lut)
+
+        self._send_command(0x20)
+        self._read_busy()
 
 
 if __name__ == "__main__":
-    epd = Eink(rotation=270)
+    from uarray import array
+
+    epd = EinkPIO(rotation=270, use_partial_buffer=True)
     epd.fill()
 
     epd.text("test", 10, 10)
-    epd.fill_rect(0, 19, 52, 10, epd.lightgray)
+    epd.rect(0, 19, 52, 10, epd.lightgray, f=True)
     epd.text("test", 10, 20, epd.darkgray)
-    epd.fill_rect(0, 29, 52, 10, epd.darkgray)
+    epd.rect(0, 29, 52, 10, epd.darkgray, f=True)
     epd.text("test", 10, 30, epd.lightgray)
-    epd.fill_rect(0, 39, 52, 10)
+    epd.rect(0, 39, 52, 10, f=True)
     epd.text("test", 10, 40, epd.white)
     epd.rect(0, 8, 52, 41)
 
@@ -430,15 +491,30 @@ if __name__ == "__main__":
     epd.vline(55, 60, 100)
     epd.line(5, 60, 55, 160)
     epd.line(55, 60, 5, 160)
+
+    epd.rect(65, 20, 50, 50, f=True)
+    epd.rect(65, 70, 50, 50, epd.darkgray, f=True)
+    epd.rect(65, 120, 50, 50, epd.lightgray, f=True)
+    epd.rect(65, 170, 50, 50, f=True)
+    epd.rect(65, 20, 50, 200)
+
+    epd.ellipse(150, 120, 25, 100, epd.lightgray, f=True, m=0b1010)
+    epd.ellipse(150, 120, 25, 100, epd.darkgray, f=True, m=0b0101)
+    epd.ellipse(150, 120, 25, 25, f=True)
+    epd.ellipse(150, 120, 10, 10, epd.white, f=True)
+
+    bestagon = array('h', [0, 0, 50, 0, 75, 43, 50, 86, 0, 86, -25, 43])
+    epd.poly(205, 77, bestagon, c=epd.darkgray, f=True)
+
     epd.show()
 
-    sleep_ms(5000)
+    epd.partial_mode_on()
 
-    epd.fill_rect(100, 20, 50, 50)
-    epd.fill_rect(100, 70, 50, 50, epd.darkgray)
-    epd.fill_rect(100, 120, 50, 50, epd.lightgray)
-    epd.fill_rect(100, 170, 50, 50)
-    epd.rect(100, 20, 50, 200)
-    epd.show()
+    for i in range(10):
+        epd.text(str(i), 10, 200)
+        epd.show()
+        epd.text(str(i), 10, 200, epd.white)
+
+    epd.partial_mode_off()
 
     epd.sleep()

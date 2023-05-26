@@ -20,6 +20,7 @@ if __name__ == "__main__":
     from machine import Pin, PWM
     import sounds
     import time
+    import gc
 
     #connect switch to GP1 and GND. when switch is closed we run a short version of the main code.
     #this lets us choose between short or long card times on the device
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     draw_button = Pin(17, mode=Pin.IN, pull=Pin.PULL_UP)
 
     pwm = PWM(Pin(21))
-    pwm.freq(1000)
+    pwm.freq(10000)
     
     #dont play startup sounds if we reset ourselves (only when powered on)
     if machine.reset_cause() != 3:
@@ -54,12 +55,10 @@ if __name__ == "__main__":
             del PWM
             del sounds
             #draw cards!
+            gc.collect()
             if option_switch.value() == 1:
                 import mshort
-                try:
-                    mshort.draw()
-                except:
-                    machine.reset()
+                mshort.draw()
             else:
                 import mlong
                 mlong.draw()
@@ -69,7 +68,10 @@ if __name__ == "__main__":
                 if going_up:
                     if duty < 1:
                         #duty += (max(int(duty / 1000),1))
-                        duty += 0.00005 + (duty / 500)
+                        if duty > 30000:
+                            duty += 0.00005 + (duty / 100)
+                        else:
+                            duty += 0.00005 + (duty / 600)
                     else:
                         going_up = False
                 else:
@@ -81,9 +83,9 @@ if __name__ == "__main__":
             
             if (time.mktime(time.localtime()) - startup_time > 300) and (time.mktime(time.localtime()) % 6 == 0):
                 
-                if (time.mktime(time.localtime()) - startup_time > 330):
+                if (time.mktime(time.localtime()) - startup_time <= 310):
                     import greensleeves
-                    sounds.play(greensleeves.song,1,'slide',2)
+                    sounds.play(greensleeves.song,1,'slide',3)
                 else:
                     sounds.play(sounds.powerwarning,1)
         

@@ -6,6 +6,7 @@ buzzer = PWM(Pin(1))
 noisy = const((1.0,0.9,1.2,1.1,1.1,0.9,1.31,0.97,0.99,1.08,1.17,1.22,0.95,0.88,1.02,1.1,1.2,0.9,1.1,1.18,1.1,2.5,0.8,1.0,0.5,0.9,1.7,1.1))
 
 tones = {
+"LOW": 50,
 "B0": 31,
 "C1": 33,
 "CS1": 35,
@@ -104,6 +105,7 @@ tada_rev = const(('C7','','C4'))
 glitch = const(('C2','NC2'))
 click = const(('ND8','E5'))
 keywords = const(('NB1','NB2'))
+thump = ('LOW', 'NB0')
 powerwarning = const(('HIGH','B0','HIGH','E4','E4'))
 
 
@@ -197,5 +199,5 @@ def jingle(mysong,speed=1):
     
 if __name__ == "__main__":
     #slide(greensleeves,1,2)
-    play(keywords,2)
+    play(thump,10)
     stop()
